@@ -70,7 +70,10 @@ jobs:
       - name: Take the config from the base branch
         run: |
           set -euo pipefail
-          git fetch --depth=1 origin "$BASE_REF"
+          # Not --depth=1: that leaves origin/$BASE_REF shallow, and a later
+          # `git merge origin/$BASE_REF` then finds no common ancestor and
+          # fails instantly. The checkout above is already unshallow.
+          git fetch origin "$BASE_REF"
           if ! git show "origin/$BASE_REF:agent-workflows.config.json" > "$RUNNER_TEMP/agent-workflows.config.json"; then
             echo "::error::agent-workflows.config.json is not on $BASE_REF. Run 'npx @codebypanduro/agent-workflows init' and merge it before labelling pull requests."
             exit 1

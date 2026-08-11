@@ -92,6 +92,16 @@ describe("the shape every reusable workflow has to have", () => {
     }
   });
 
+  // A shallow fetch of the base ref leaves origin/$BASE_REF without a common
+  // ancestor, so a later merge fails instantly with a misleading error.
+  it("never fetches the base ref shallowly", () => {
+    for (const name of REUSABLE) {
+      expect(read(name), `${name} fetches $BASE_REF with --depth`).not.toMatch(
+        /git fetch[^\n]*--depth[^\n]*BASE_REF/,
+      );
+    }
+  });
+
   it("takes its config from the base branch, never the checked-out head", () => {
     for (const name of REUSABLE) {
       const yaml = read(name);

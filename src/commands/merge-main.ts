@@ -17,6 +17,11 @@ import { agent, configureGitIdentity, git, outputDir, report, required, tryGit, 
 import { fetchPullRequest } from "../shared/pr-context.ts";
 import { verifyWithRepair } from "../shared/verify.ts";
 
+/** Whether a merge is actually in progress, so `--abort` is a legal move. */
+function mergeInProgress(): boolean {
+  return tryGit(["rev-parse", "--verify", "MERGE_HEAD"]).ok;
+}
+
 /** Files left with conflict markers by a failed merge. */
 function conflictedFiles(): string[] {
   return git(["diff", "--name-only", "--diff-filter=U"])
@@ -69,9 +74,15 @@ export async function mergeMain(config: Config): Promise<void> {
   const conflicts = conflictedFiles();
   if (conflicts.length === 0) {
     // Merge failed for some reason other than conflicts — a dirty tree, a
-    // missing ref. Not something an agent should paper over.
-    git(["merge", "--abort"]);
-    throw new Error(`git merge failed without conflicts:\n${merge.output}`);
+    // shallow ref with no common ancestor, a missing branch. Not something an
+    // agent should paper over.
+    //
+    // Abort only if there is actually a merge in progress, and never let its
+    // failure become the reported error: `--abort` with no MERGE_HEAD throws
+    // "there is no merge to abort", which would replace the message that
+    // explains what really went wrong.
+    if (mergeInProgress()) tryGit(["merge", "--abort"]);
+    throw new Error(`git merge failed without producing conflicts:\n${merge.output.trim()}`);
   }
 
   console.log(`${conflicts.length} conflicted file(s):\n${conflicts.map((f) => `  ${f}`).join("\n")}\n`);
