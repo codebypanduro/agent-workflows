@@ -85,7 +85,7 @@ const CALLERS: readonly CallerSpec[] = [
   },
 ];
 
-function callerWorkflow(spec: CallerSpec): string {
+function callerWorkflow(spec: CallerSpec, packageSpec?: string): string {
   const event =
     spec.trigger === "issues"
       ? "  issues:\n    types: [labeled]\n  workflow_dispatch:\n    inputs:\n      issue_number:\n        description: Issue number to work\n        required: true\n        type: string"
@@ -111,12 +111,33 @@ jobs:
   run:
 ${guard}
     uses: ${OWNER}/.github/workflows/${spec.workflow}@${WORKFLOW_REF}
-${
-  spec.trigger === "issues"
-    ? "    # A reusable workflow cannot see the caller's inputs, so a manual run\n    # has to hand the issue number over explicitly.\n    with:\n      issue_number: ${{ inputs.issue_number || '' }}\n"
-    : ""
-}    secrets: inherit
+${withBlock(spec, packageSpec)}    secrets: inherit
 `;
+}
+
+/**
+ * The `with:` block, which exists only when there is something to pass.
+ *
+ * `package-spec` is how a project runs an unpublished build — npm compiles the
+ * package from a git ref on install.
+ */
+function withBlock(spec: CallerSpec, packageSpec?: string): string {
+  const lines: string[] = [];
+
+  if (spec.trigger === "issues") {
+    lines.push(
+      "    # A reusable workflow cannot see the caller's inputs, so a manual run",
+      "    # has to hand the issue number over explicitly.",
+      "      issue_number: ${{ inputs.issue_number || '' }}",
+    );
+  }
+  if (packageSpec) lines.push(`      package-spec: "${packageSpec}"`);
+  if (lines.length === 0) return "";
+
+  // The comment lines have to precede `with:`, not sit inside it.
+  const comments = lines.filter((line) => line.trimStart().startsWith("#"));
+  const entries = lines.filter((line) => !line.trimStart().startsWith("#"));
+  return `${[...comments, "    with:", ...entries].join("\n")}\n`;
 }
 
 /** A config that will not run until someone fills in `verify`. */
@@ -146,6 +167,19 @@ function detect(cwd: string): Partial<ConfigInput> {
   }
 }
 
+/** Run artifacts sandcastle leaves in the repository. */
+const IGNORED = [".sandcastle/worktrees/", ".sandcastle/logs/"] as const;
+
+/** True when .gitignore already covers this path, exactly or via a parent. */
+export function ignoredAlready(gitignore: string, entry: string): boolean {
+  const trimmed = entry.replace(/\/$/, "");
+  const parent = trimmed.split("/")[0] ?? trimmed;
+  return gitignore
+    .split("\n")
+    .map((line) => line.trim().replace(/\/$/, ""))
+    .some((line) => line === trimmed || line === parent);
+}
+
 export interface InitResult {
   readonly written: string[];
   readonly skipped: string[];
@@ -153,7 +187,12 @@ export interface InitResult {
   readonly warnings: string[];
 }
 
-export async function init(cwd = process.cwd()): Promise<void> {
+export interface InitOptions {
+  /** Overrides the npm spec in the generated callers. Accepts a git ref. */
+  readonly packageSpec?: string;
+}
+
+export async function init(cwd = process.cwd(), options: InitOptions = {}): Promise<void> {
   const result: InitResult = { written: [], skipped: [], labels: [], warnings: [] };
   const written = result.written as string[];
   const skipped = result.skipped as string[];
@@ -165,7 +204,7 @@ export async function init(cwd = process.cwd()): Promise<void> {
   const dir = join(cwd, ".github", "workflows");
   mkdirSync(dir, { recursive: true });
   for (const spec of CALLERS) {
-    writeFileSync(join(dir, spec.file), callerWorkflow(spec));
+    writeFileSync(join(dir, spec.file), callerWorkflow(spec, options.packageSpec));
     written.push(`.github/workflows/${spec.file}`);
   }
 
@@ -178,12 +217,16 @@ export async function init(cwd = process.cwd()): Promise<void> {
     written.push(CONFIG_FILENAME);
   }
 
-  // The sandcastle worktree directory is build output, not source.
+  // Only the volatile subdirectories. Ignoring all of `.sandcastle/` would be
+  // wrong for any project that also runs sandcastle locally — that directory
+  // holds tracked source there, and swallowing it hides real files.
   const ignorePath = join(cwd, ".gitignore");
-  const ignore = existsSync(ignorePath) ? readFileSync(ignorePath, "utf8") : "";
-  if (!/^\.sandcastle\/?$/m.test(ignore)) {
-    writeFileSync(ignorePath, `${ignore}${ignore.endsWith("\n") || ignore === "" ? "" : "\n"}.sandcastle/\n`);
-    written.push(".gitignore (added .sandcastle/)");
+  const before = existsSync(ignorePath) ? readFileSync(ignorePath, "utf8") : "";
+  const missing = IGNORED.filter((entry) => !ignoredAlready(before, entry));
+  if (missing.length > 0) {
+    const separator = before === "" || before.endsWith("\n") ? "" : "\n";
+    writeFileSync(ignorePath, `${before}${separator}\n# agent-workflows run artifacts\n${missing.join("\n")}\n`);
+    written.push(`.gitignore (added ${missing.join(", ")})`);
   }
 
   // --force so a deleted or recoloured label heals rather than erroring.

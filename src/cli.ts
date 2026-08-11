@@ -15,7 +15,10 @@ import { fail } from "./shared/common.ts";
 const USAGE = `agent-workflows <command>
 
 Setup
-  init                     Scaffold the caller workflows, config and labels
+  init [--package-spec <spec>]
+                           Scaffold the caller workflows, config and labels.
+                           --package-spec pins the runtime, e.g.
+                           github:codebypanduro/agent-workflows#v1
 
 Run (called by the reusable workflows; you should not need these by hand)
   implement                Implement an issue on a fresh branch
@@ -31,9 +34,13 @@ const command = process.argv[2];
 
 try {
   switch (command) {
-    case "init":
-      await init();
+    case "init": {
+      const flag = process.argv.indexOf("--package-spec");
+      await init(process.cwd(), {
+        packageSpec: flag === -1 ? undefined : process.argv[flag + 1],
+      });
       break;
+    }
 
     // Reads no config: it is pure outcome-to-label logic, and it has to work
     // even on the path where loading the config is what failed.
