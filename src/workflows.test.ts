@@ -34,11 +34,49 @@ function jobEnvLines(yaml: string): string[] {
   return collected;
 }
 
+/** The callers this repository generated for itself, to run its own workflows. */
+const DOGFOOD = REUSABLE.map((name) => `agent-${name}`);
+
 describe("every workflow file", () => {
   it("is covered by this test", () => {
     const present = readdirSync(workflowDir).filter((name) => name.endsWith(".yml"));
 
-    expect(present.sort()).toEqual([...REUSABLE, "test.yml"].sort());
+    expect(present.sort()).toEqual([...REUSABLE, ...DOGFOOD, "test.yml"].sort());
+  });
+});
+
+// This repository installs its own workflows, so that main is exercised for
+// real after every merge — the static checks below only catch what can be seen
+// without running anything.
+describe("dogfooding", () => {
+  it("has a caller for every reusable workflow", () => {
+    for (const name of DOGFOOD) {
+      expect(readdirSync(workflowDir)).toContain(name);
+    }
+  });
+
+  it("calls them by relative path, so a run tests this commit", () => {
+    for (const [i, name] of DOGFOOD.entries()) {
+      expect(read(name)).toContain(`uses: ./.github/workflows/${REUSABLE[i]}`);
+    }
+  });
+
+  it("runs the CLI from the checkout rather than a registry", () => {
+    for (const name of DOGFOOD) {
+      expect(read(name)).toContain('package-spec: "file:."');
+    }
+  });
+
+  // This repository is public, so an unguarded pull_request_target caller would
+  // run a fork's code with its secrets on any label click.
+  it("never runs a fork's code", () => {
+    for (const name of DOGFOOD) {
+      if (!read(name).includes("pull_request_target")) continue;
+
+      expect(read(name), `${name} would run fork code with repository secrets`).toContain(
+        "github.event.pull_request.head.repo.full_name == github.repository",
+      );
+    }
   });
 });
 

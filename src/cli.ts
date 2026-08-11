@@ -38,6 +38,7 @@ try {
       const flag = process.argv.indexOf("--package-spec");
       await init(process.cwd(), {
         packageSpec: flag === -1 ? undefined : process.argv[flag + 1],
+        local: process.argv.includes("--local"),
       });
       break;
     }

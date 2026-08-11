@@ -1,0 +1,13 @@
+{
+  "verify": ["npm run typecheck", "npm run test"],
+  "setup": ["npm ci"],
+  "git": {
+    "name": "agent-workflows agent",
+    "email": "cp@codebypanduro.dk"
+  },
+  "agentLogin": "casperpanduro",
+  "prompts": {
+    "codingStandards": "CLAUDE.md",
+    "notes": "This repository is the package that provides these very workflows, and it installs its own — so a change here runs against itself. `npm ci` triggers `prepare`, which compiles to `dist/`.\n\nEverything branchy is pure and unit tested; `src/commands/*` are IO shells over it. Keep that split: logic that ends up in YAML or in a command is logic nothing can test.\n\nTwo invariants in `src/shared/lifecycle.ts` are load-bearing and their tests say so. Exactly two transitions in the table chain to another workflow, and implement-pr never chains — together that is the only thing bounding the run loop. Do not add a third chaining edge.\n\nThe test guard in `src/shared/test-guard.ts` exists because the self-repair loop hands a failing agent an incentive to delete tests. Never weaken it, and never make its own tests pass by narrowing what it checks.\n\n`src/workflows.test.ts` pins rules GitHub only enforces on push, where a failure produces no log at all. If it complains, the workflow really is invalid — do not relax the assertion."
+  }
+}

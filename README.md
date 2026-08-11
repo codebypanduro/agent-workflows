@@ -85,6 +85,20 @@ Merge anything. Push to your default branch. Close an issue. Rebase a branch (th
 - A Claude Code OAuth token and a PAT
 - Your repo's CI green on `main` — the agent's pass criterion is your verify commands
 
+## On a public repository
+
+The three pull-request workflows use `pull_request_target`, which runs with the repository's secrets and checks out the head branch. Unguarded, that means a fork's code executes with your tokens the moment any collaborator applies a label.
+
+`init` therefore generates every pull-request caller with a same-repo condition:
+
+```yaml
+    if: >-
+      github.event.label.name == 'agent:review'
+      && github.event.pull_request.head.repo.full_name == github.repository
+```
+
+Fork pull requests simply do not trigger them. On a private repository this costs nothing; on a public one it is the difference between a convenience and a credential leak. Do not remove it to "make it work for contributors" — that is precisely the case it exists for.
+
 ## Troubleshooting
 
 **"Invalid workflow file … the nested job is requesting … but is only allowed …"**

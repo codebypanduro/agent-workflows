@@ -85,7 +85,7 @@ describe("generated caller workflows", () => {
 
   it("passes a package spec through only when one is given", () => {
     expect(callerWorkflow(CALLERS[0]!)).not.toContain("package-spec");
-    expect(callerWorkflow(CALLERS[0]!, "github:x/y#v1")).toContain(
+    expect(callerWorkflow(CALLERS[0]!, { packageSpec: "github:x/y#v1" })).toContain(
       'package-spec: "github:x/y#v1"',
     );
   });
@@ -94,6 +94,13 @@ describe("generated caller workflows", () => {
     const issueCaller = CALLERS.find((spec) => spec.trigger === "issues")!;
 
     expect(callerWorkflow(issueCaller)).toContain("issue_number: ${{ inputs.issue_number || '' }}");
+  });
+
+  it("calls by relative path in local mode, so a run tests the checkout", () => {
+    const yaml = callerWorkflow(CALLERS[0]!, { local: true });
+
+    expect(yaml).toContain("uses: ./.github/workflows/implement.yml");
+    expect(yaml).toContain('package-spec: "file:."');
   });
 
   it("points every caller at a workflow that exists and accepts workflow_call", () => {
@@ -105,6 +112,19 @@ describe("generated caller workflows", () => {
   it("guards on the label that triggers it", () => {
     for (const spec of CALLERS) {
       expect(callerWorkflow(spec)).toContain(`== '${spec.label}'`);
+    }
+  });
+
+  // Without this, a fork pull request plus one careless label click runs the
+  // fork's code with the repository's secrets.
+  it("refuses to run pull_request_target against a fork", () => {
+    for (const spec of CALLERS) {
+      if (spec.trigger !== "pull_request_target") continue;
+
+      expect(
+        callerWorkflow(spec),
+        `${spec.file} would run fork code with repository secrets`,
+      ).toContain("github.event.pull_request.head.repo.full_name == github.repository");
     }
   });
 });

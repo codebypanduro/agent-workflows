@@ -106,16 +106,35 @@ export const CALLERS: readonly CallerSpec[] = [
   },
 ];
 
-export function callerWorkflow(spec: CallerSpec, packageSpec?: string): string {
+export interface CallerOptions {
+  /** Overrides the npm spec the called workflow runs. Accepts a git spec. */
+  readonly packageSpec?: string;
+  /**
+   * Call the workflows by relative path instead of `owner/repo@ref`.
+   *
+   * Only meaningful inside this package's own repository, which installs its
+   * own workflows so that main is exercised end to end after every merge. The
+   * static tests catch shape errors on a pull request; this catches the ones
+   * that only appear when GitHub actually runs the thing.
+   */
+  readonly local?: boolean;
+}
+
+export function callerWorkflow(spec: CallerSpec, options: CallerOptions = {}): string {
   const event =
     spec.trigger === "issues"
       ? "  issues:\n    types: [labeled]\n  workflow_dispatch:\n    inputs:\n      issue_number:\n        description: Issue number to work\n        required: true\n        type: string"
       : "  pull_request_target:\n    types: [labeled]";
 
+  // pull_request_target runs with the repository's secrets and checks out the
+  // head branch, so on a public repository a fork's code would execute with
+  // your tokens the moment any collaborator applied a label. The same-repo
+  // condition removes that path entirely. It costs nothing on a private
+  // repository, where there are no fork pull requests to begin with.
   const guard =
     spec.trigger === "issues"
       ? `    if: github.event_name == 'workflow_dispatch' || github.event.label.name == '${spec.label}'`
-      : `    if: github.event.label.name == '${spec.label}'`;
+      : `    if: >-\n      github.event.label.name == '${spec.label}'\n      && github.event.pull_request.head.repo.full_name == github.repository`;
 
   return `# ${spec.comment}
 #
@@ -137,8 +156,12 @@ ${guard}
 ${Object.entries(spec.permissions)
   .map(([scope, level]) => `      ${scope}: ${level}`)
   .join("\n")}
-    uses: ${OWNER}/.github/workflows/${spec.workflow}@${WORKFLOW_REF}
-${withBlock(spec, packageSpec)}    secrets: inherit
+    uses: ${
+  options.local
+    ? `./.github/workflows/${spec.workflow}`
+    : `${OWNER}/.github/workflows/${spec.workflow}@${WORKFLOW_REF}`
+}
+${withBlock(spec, options)}    secrets: inherit
 `;
 }
 
@@ -148,7 +171,7 @@ ${withBlock(spec, packageSpec)}    secrets: inherit
  * `package-spec` is how a project runs an unpublished build — npm compiles the
  * package from a git ref on install.
  */
-function withBlock(spec: CallerSpec, packageSpec?: string): string {
+function withBlock(spec: CallerSpec, options: CallerOptions): string {
   const lines: string[] = [];
 
   if (spec.trigger === "issues") {
@@ -158,7 +181,10 @@ function withBlock(spec: CallerSpec, packageSpec?: string): string {
       "      issue_number: ${{ inputs.issue_number || '' }}",
     );
   }
-  if (packageSpec) lines.push(`      package-spec: "${packageSpec}"`);
+  if (options.packageSpec) lines.push(`      package-spec: "${options.packageSpec}"`);
+  // Locally, the CLI comes from the checkout rather than from a registry, so
+  // the workflow runs the code in the commit under test.
+  if (options.local) lines.push('      package-spec: "file:."');
   if (lines.length === 0) return "";
 
   // The comment lines have to precede `with:`, not sit inside it.
@@ -217,6 +243,8 @@ export interface InitResult {
 export interface InitOptions {
   /** Overrides the npm spec in the generated callers. Accepts a git ref. */
   readonly packageSpec?: string;
+  /** Call the workflows by relative path — this package's own repository only. */
+  readonly local?: boolean;
 }
 
 export async function init(cwd = process.cwd(), options: InitOptions = {}): Promise<void> {
@@ -231,7 +259,7 @@ export async function init(cwd = process.cwd(), options: InitOptions = {}): Prom
   const dir = join(cwd, ".github", "workflows");
   mkdirSync(dir, { recursive: true });
   for (const spec of CALLERS) {
-    writeFileSync(join(dir, spec.file), callerWorkflow(spec, options.packageSpec));
+    writeFileSync(join(dir, spec.file), callerWorkflow(spec, options));
     written.push(`.github/workflows/${spec.file}`);
   }
 
