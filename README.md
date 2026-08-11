@@ -85,6 +85,22 @@ Merge anything. Push to your default branch. Close an issue. Rebase a branch (th
 - A Claude Code OAuth token and a PAT
 - Your repo's CI green on `main` — the agent's pass criterion is your verify commands
 
+## Troubleshooting
+
+**"Invalid workflow file … the nested job is requesting … but is only allowed …"**
+
+The caller is not granting the permissions the called workflow needs. A reusable workflow can only *narrow* what its caller has, never widen it, and most repositories default `GITHUB_TOKEN` to read-only — which is the right setting to keep.
+
+`init` writes the correct `permissions:` block into each caller. If you hand-wrote them, or generated them with an older version, re-run `init`.
+
+**"Startup failure" with no log at all**
+
+Same class of problem. A run that dies during workflow validation never reaches a step, so there is nothing to log — read the annotation on the run's summary page rather than looking for job output.
+
+**Every run fails at once**
+
+Usually an expired `CLAUDE_CODE_OAUTH_TOKEN`. Regenerate with `claude setup-token`.
+
 ## Pinning
 
 The caller workflows `init` writes point at `@v1` and run `npx @codebypanduro/agent-workflows@latest`. To pin the runtime, pass `package-version`:

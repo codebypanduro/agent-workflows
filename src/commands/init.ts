@@ -40,16 +40,30 @@ export const LABELS: readonly LabelSpec[] = [
   { name: HUMAN_BLOCKED, color: "B60205", description: "A run ended without usable output. Needs a human decision." },
 ];
 
-interface CallerSpec {
+export interface CallerSpec {
   readonly file: string;
   readonly name: string;
   readonly trigger: string;
   readonly label: string;
   readonly workflow: string;
   readonly comment: string;
+  /**
+   * Granted by the caller, because a reusable workflow can only *narrow* what
+   * it is given — never widen it.
+   *
+   * Most repositories default `GITHUB_TOKEN` to read-only, which is the right
+   * setting. Without this block the called workflow asks for write against a
+   * read-only grant and the run dies at startup with "the nested job is
+   * requesting ... but is only allowed ...", before a single step executes.
+   *
+   * Keep each entry to what its workflow actually uses: review is
+   * comment-only, and giving it `contents: write` would quietly undo the one
+   * thing making that guarantee real.
+   */
+  readonly permissions: Record<string, string>;
 }
 
-const CALLERS: readonly CallerSpec[] = [
+export const CALLERS: readonly CallerSpec[] = [
   {
     file: "agent-implement.yml",
     name: "Agent Implement",
@@ -57,6 +71,7 @@ const CALLERS: readonly CallerSpec[] = [
     label: TODO,
     workflow: "implement.yml",
     comment: "Implements an issue from scratch and opens a draft pull request.",
+    permissions: { issues: "write", contents: "read" },
   },
   {
     file: "agent-implement-pr.yml",
@@ -66,6 +81,7 @@ const CALLERS: readonly CallerSpec[] = [
     workflow: "implement-pr.yml",
     comment:
       "Addresses the review feedback on a pull request. This is the end of the\n# chain: it never re-requests review, which is what stops the loop.",
+    permissions: { contents: "write", "pull-requests": "write" },
   },
   {
     file: "agent-review.yml",
@@ -74,6 +90,9 @@ const CALLERS: readonly CallerSpec[] = [
     label: REVIEW,
     workflow: "review.yml",
     comment: "Reviews a pull request. Comment-only — the job has no contents: write.",
+    // Deliberately no contents: write. This is what makes "comment-only" a
+    // fact the platform enforces rather than a promise the prompt makes.
+    permissions: { "pull-requests": "write" },
   },
   {
     file: "agent-merge-main.yml",
@@ -82,10 +101,11 @@ const CALLERS: readonly CallerSpec[] = [
     label: MERGE_MAIN,
     workflow: "merge-main.yml",
     comment: "Merges the base branch in. Never rebases — that would detach review comments.",
+    permissions: { contents: "write", "pull-requests": "write" },
   },
 ];
 
-function callerWorkflow(spec: CallerSpec, packageSpec?: string): string {
+export function callerWorkflow(spec: CallerSpec, packageSpec?: string): string {
   const event =
     spec.trigger === "issues"
       ? "  issues:\n    types: [labeled]\n  workflow_dispatch:\n    inputs:\n      issue_number:\n        description: Issue number to work\n        required: true\n        type: string"
@@ -110,6 +130,12 @@ ${event}
 jobs:
   run:
 ${guard}
+    # Granted here, not in the called workflow: a reusable workflow can only
+    # narrow what the caller gives it. Without this the run dies at startup.
+    permissions:
+${Object.entries(spec.permissions)
+  .map(([scope, level]) => `      ${scope}: ${level}`)
+  .join("\n")}
     uses: ${OWNER}/.github/workflows/${spec.workflow}@${WORKFLOW_REF}
 ${withBlock(spec, packageSpec)}    secrets: inherit
 `;
