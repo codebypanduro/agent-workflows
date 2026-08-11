@@ -32,8 +32,14 @@ jobs:
     timeout-minutes: ${{ inputs.timeout-minutes }}
 
     permissions:
-      # No contents: write. The reviewer cannot commit even if it tries — this
-      # is what makes "comment-only" a fact rather than a promise.
+      # read, not write: enough to clone the code under review, not enough to
+      # change it. That asymmetry is what makes "comment-only" a fact the
+      # platform enforces rather than a promise the prompt makes.
+      #
+      # Omitting `contents` entirely does not work — on a private repository
+      # the checkout then fails with "Repository not found", which reads like a
+      # missing repo rather than a missing scope.
+      contents: read
       pull-requests: write
 
     env:

@@ -90,9 +90,10 @@ export const CALLERS: readonly CallerSpec[] = [
     label: REVIEW,
     workflow: "review.yml",
     comment: "Reviews a pull request. Comment-only — the job has no contents: write.",
-    // Deliberately no contents: write. This is what makes "comment-only" a
-    // fact the platform enforces rather than a promise the prompt makes.
-    permissions: { "pull-requests": "write" },
+    // read, not write. Enough to clone the code under review, not enough to
+    // change it — which is what makes "comment-only" enforced rather than
+    // promised. Omitting `contents` altogether breaks the checkout.
+    permissions: { contents: "read", "pull-requests": "write" },
   },
   {
     file: "agent-merge-main.yml",

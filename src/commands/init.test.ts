@@ -55,11 +55,25 @@ describe("generated caller workflows", () => {
 
   // Widening is as much a bug as narrowing, in the one case where the absence
   // of a permission is the feature.
-  it("never grants the reviewer write access to the repository", () => {
+  it("gives the reviewer read access and no more", () => {
     const reviewCaller = CALLERS.find((spec) => spec.workflow === "review.yml");
 
-    expect(reviewCaller?.permissions.contents).toBeUndefined();
+    // Not `undefined`: without contents: read the checkout fails, and on a
+    // private repository it fails as "Repository not found".
+    expect(reviewCaller?.permissions.contents).toBe("read");
     expect(reusable("review.yml")).not.toMatch(/^\s+contents: write$/m);
+  });
+
+  // Every workflow that checks the repository out needs to be able to read it.
+  it("grants contents: read to every caller whose workflow checks out code", () => {
+    for (const spec of CALLERS) {
+      if (!reusable(spec.workflow).includes("actions/checkout")) continue;
+
+      expect(
+        spec.permissions.contents,
+        `${spec.file} checks out code but grants no contents permission`,
+      ).toMatch(/^(read|write)$/);
+    }
   });
 
   it("emits the permissions block before the uses line", () => {
