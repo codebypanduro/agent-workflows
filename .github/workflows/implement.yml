@@ -19,9 +19,17 @@ on:
         type: number
         default: 60
       package-version:
-        description: Version of @codebypanduro/agent-workflows to run
+        description: npm version of @codebypanduro/agent-workflows to run
         type: string
         default: latest
+      package-spec:
+        description: >-
+          Full npm spec, overriding package-version. Use a git spec such as
+          `github:codebypanduro/agent-workflows#v1` to run an unpublished
+          build — npm runs the package's `prepare` script, so it compiles on
+          install.
+        type: string
+        default: ""
       issue_number:
         description: >-
           Issue to work. Only for a manual run — the caller passes its own
@@ -47,7 +55,7 @@ jobs:
       REPO: ${{ github.repository }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       BASE_BRANCH: ${{ github.event.repository.default_branch }}
-      CLI: npx -y @codebypanduro/agent-workflows@${{ inputs.package-version }}
+      CLI: npx -y ${{ inputs.package-spec != '' && inputs.package-spec || format('@codebypanduro/agent-workflows@{0}', inputs.package-version) }}
 
     steps:
       - name: Resolve the issue

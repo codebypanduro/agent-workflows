@@ -21,6 +21,10 @@ on:
       package-version:
         type: string
         default: latest
+      package-spec:
+        description: Full npm spec, overriding package-version. Accepts a git spec.
+        type: string
+        default: ""
 
 jobs:
   review:
@@ -37,7 +41,7 @@ jobs:
       REPO: ${{ github.repository }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
-      CLI: npx -y @codebypanduro/agent-workflows@${{ inputs.package-version }}
+      CLI: npx -y ${{ inputs.package-spec != '' && inputs.package-spec || format('@codebypanduro/agent-workflows@{0}', inputs.package-version) }}
 
     steps:
       - name: Claim the pull request
