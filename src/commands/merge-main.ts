@@ -9,11 +9,21 @@
 // self-repair loop the implement workflows use, and the run leaves a comment
 // naming every file it touched.
 
-import * as sandcastle from "@ai-hero/sandcastle";
+import { run } from "@ai-hero/sandcastle";
 import { noSandbox } from "@ai-hero/sandcastle/sandboxes/no-sandbox";
 import type { Config } from "../config.ts";
 import { materialisePrompt } from "../prompts.ts";
-import { agent, configureGitIdentity, git, outputDir, report, required, tryGit, writeOutput } from "../shared/common.ts";
+import {
+  agent,
+  configureGitIdentity,
+  git,
+  localHost,
+  outputDir,
+  report,
+  required,
+  tryGit,
+  writeOutput,
+} from "../shared/common.ts";
 import { fetchPullRequest } from "../shared/pr-context.ts";
 import { verifyWithRepair } from "../shared/verify.ts";
 
@@ -87,51 +97,57 @@ export async function mergeMain(config: Config): Promise<void> {
 
   console.log(`${conflicts.length} conflicted file(s):\n${conflicts.map((f) => `  ${f}`).join("\n")}\n`);
 
-  const sandbox = await sandcastle.createSandbox({
-    branch: pr.headRefName,
-    baseBranch: base,
+  // Runs against the checkout, not a worktree. The conflicted merge lives in
+  // this index — a worktree would have its own, and could not see it — and the
+  // branch is already checked out here, so git would refuse to create one
+  // anyway. `head` is the branch strategy that means "work where you are".
+  const host = localHost(config);
+
+  // The setup commands normally run as a worktree hook. There is no worktree,
+  // so run them here: the checkout has no dependencies installed either.
+  for (const command of config.setup) {
+    console.log(`\nSetup: ${command}`);
+    const result = await host.exec(command, { onLine: (line) => console.log(`  ${line}`) });
+    if (result.exitCode !== 0) throw new Error(`Setup command failed: ${command}`);
+  }
+
+  const resolve = await run({
+    name: "merge-main",
+    maxIterations: 50,
+    agent: agent(config),
     sandbox: noSandbox(),
-    hooks: { sandbox: { onSandboxReady: config.setup.map((command) => ({ command })) } },
+    branchStrategy: { type: "head" },
+    logging: { type: "stdout" },
+    promptFile: materialisePrompt("merge-main", config, outputDir()),
+    promptArgs: {
+      BRANCH: pr.headRefName,
+      BASE_BRANCH: base,
+      CONFLICTED_FILES: conflicts.map((file) => `- ${file}`).join("\n"),
+      COMMIT_PREFIX: config.commitPrefix,
+    },
   });
 
-  try {
-    const run = await sandbox.run({
-      name: "merge-main",
-      maxIterations: 50,
-      agent: agent(config),
-      promptFile: materialisePrompt("merge-main", config, outputDir()),
-      promptArgs: {
-        BRANCH: pr.headRefName,
-        BASE_BRANCH: base,
-        CONFLICTED_FILES: conflicts.map((file) => `- ${file}`).join("\n"),
-        COMMIT_PREFIX: config.commitPrefix,
-      },
-    });
+  if (resolve.commits.length === 0) {
+    report("no-commits");
+    return;
+  }
 
-    if (run.commits.length === 0) {
-      report("no-commits");
-      return;
-    }
+  // Same loop as the implement workflows, guard included: an agent that can
+  // make a merge compile by deleting the tests that disagreed with it is the
+  // worst version of that failure, not an exception to it.
+  const outcome = await verifyWithRepair(host, resolve, config);
 
-    // Same loop as the implement workflows, guard included: an agent that can
-    // make a merge compile by deleting the tests that disagreed with it is the
-    // worst version of that failure, not an exception to it.
-    const outcome = await verifyWithRepair(sandbox, run, config);
-
-    switch (outcome.kind) {
-      case "checks-passed":
-        writeOutput("should_push.txt", "true");
-        writeOutput("merge_comment.md", resolutionComment(conflicts, runUrl));
-        report("merged", String(conflicts.length));
-        break;
-      case "checks-failed":
-        report("checks-failed", outcome.failedCommand);
-        break;
-      case "test-guard-tripped":
-        report("test-guard-tripped", outcome.detail);
-        break;
-    }
-  } finally {
-    await sandbox.close();
+  switch (outcome.kind) {
+    case "checks-passed":
+      writeOutput("should_push.txt", "true");
+      writeOutput("merge_comment.md", resolutionComment(conflicts, runUrl));
+      report("merged", String(conflicts.length));
+      break;
+    case "checks-failed":
+      report("checks-failed", outcome.failedCommand);
+      break;
+    case "test-guard-tripped":
+      report("test-guard-tripped", outcome.detail);
+      break;
   }
 }

@@ -5,7 +5,7 @@
 // unit tested; these are the bits that touch the process, the filesystem and
 // the `gh` CLI.
 
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import * as sandcastle from "@ai-hero/sandcastle";
@@ -151,6 +151,35 @@ export const agent = (config: Config): AgentProvider =>
       ...config.env,
     },
   });
+
+/**
+ * An `ExecHost` backed by the process's own working directory.
+ *
+ * For runs that operate on the checkout rather than a worktree — see the note
+ * on `ExecHost`.
+ */
+export function localHost(config: { env: Record<string, string> }): {
+  exec(
+    command: string,
+    options?: { onLine?: (line: string) => void },
+  ): Promise<{ exitCode: number; stdout: string }>;
+} {
+  return {
+    async exec(command, options) {
+      const result = spawnSync(command, {
+        shell: true,
+        encoding: "utf8",
+        env: { ...process.env, ...config.env },
+        maxBuffer: 64 * 1024 * 1024,
+      });
+      const stdout = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+      if (options?.onLine) {
+        for (const line of stdout.split("\n")) options.onLine(line);
+      }
+      return { exitCode: result.status ?? 1, stdout };
+    },
+  };
+}
 
 /** Wraps a run so any throw becomes a readable `failure_reason.txt`. */
 export async function main(body: () => Promise<void>): Promise<void> {

@@ -6,7 +6,6 @@
 // to pass something the pull request would fail, so nothing here may diverge
 // from that workflow.
 
-import type { Sandbox, SandboxRunResult } from "@ai-hero/sandcastle";
 import type { Config } from "../config.ts";
 import { census, compareCensus, isTestFile, type GuardVerdict, type TestFile } from "./test-guard.ts";
 
@@ -17,8 +16,29 @@ export interface VerifyResult {
   readonly output: string;
 }
 
+/**
+ * Somewhere commands can be run — a sandbox worktree, or the checkout itself.
+ *
+ * Structural on purpose. `merge-main` cannot use a worktree: the conflicts it
+ * resolves live in the checkout's index, and the branch is already checked out
+ * there, so git refuses to create a second worktree on it. It runs against the
+ * checkout instead, and everything below works either way.
+ */
+export interface ExecHost {
+  exec(
+    command: string,
+    options?: { onLine?: (line: string) => void },
+  ): Promise<{ exitCode: number; stdout: string }>;
+}
+
+/** An agent run whose session can be continued. */
+export interface Resumable {
+  readonly commits: readonly { readonly sha: string }[];
+  readonly resume?: (prompt: string) => Promise<Resumable>;
+}
+
 /** Runs the project's verify commands in order, stopping at the first failure. */
-export async function verify(sandbox: Sandbox, config: Config): Promise<VerifyResult> {
+export async function verify(sandbox: ExecHost, config: Config): Promise<VerifyResult> {
   for (const command of config.verify) {
     console.log(`\nVerifying: ${command}`);
     const lines: string[] = [];
@@ -40,7 +60,7 @@ export async function verify(sandbox: Sandbox, config: Config): Promise<VerifyRe
 }
 
 /** Reads every test file on the branch, for the guard to count. */
-async function testFiles(sandbox: Sandbox): Promise<TestFile[]> {
+async function testFiles(sandbox: ExecHost): Promise<TestFile[]> {
   const listed = await sandbox.exec("git ls-files");
   const paths = listed.stdout.split("\n").map((line) => line.trim()).filter(isTestFile);
 
@@ -82,8 +102,8 @@ function retryPrompt(result: VerifyResult, attempt: number, total: number): stri
  * verification reported.
  */
 export async function verifyWithRepair(
-  sandbox: Sandbox,
-  run: SandboxRunResult,
+  sandbox: ExecHost,
+  run: Resumable,
   config: Config,
 ): Promise<LoopOutcome> {
   const maxRetries = config.maxRetries;
