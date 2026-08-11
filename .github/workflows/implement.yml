@@ -55,6 +55,8 @@ jobs:
       REPO: ${{ github.repository }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       BASE_BRANCH: ${{ github.event.repository.default_branch }}
+      BASE_REF: ${{ github.event.repository.default_branch }}
+      AGENT_WORKFLOWS_CONFIG: ${{ runner.temp }}/agent-workflows.config.json
       CLI: npx -y ${{ inputs.package-spec != '' && inputs.package-spec || format('@codebypanduro/agent-workflows@{0}', inputs.package-version) }}
 
     steps:
@@ -120,6 +122,19 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ inputs.node-version }}
+
+      # Config comes from the base branch, never the head. A branch older than
+      # the config file has none at all, and a branch is untrusted input — a
+      # pull request could otherwise set `verify: []` and have the agent call
+      # itself green, on a run holding the repository's secrets.
+      - name: Take the config from the base branch
+        run: |
+          set -euo pipefail
+          git fetch --depth=1 origin "$BASE_REF"
+          if ! git show "origin/$BASE_REF:agent-workflows.config.json" > "$RUNNER_TEMP/agent-workflows.config.json"; then
+            echo "::error::agent-workflows.config.json is not on $BASE_REF. Run 'npx @codebypanduro/agent-workflows init' and merge it before labelling pull requests."
+            exit 1
+          fi
 
       # Before the claim, so a refusal leaves the issue exactly as it was minus
       # the trigger label — nothing in progress, nothing failed.

@@ -140,7 +140,31 @@ export function parseConfig(raw: string, source = CONFIG_FILENAME): Config {
   return result.data;
 }
 
+/**
+ * Where the run was told to read its config.
+ *
+ * The pull-request workflows set this to a copy taken from the *base* branch,
+ * for two reasons. A branch older than the config file would otherwise have no
+ * config at all — which is every branch in flight the day a project adopts
+ * this. And a branch is untrusted input: reading config from the head would let
+ * a pull request set `verify: []` and have the agent declare it green, on a
+ * `pull_request_target` run holding the repository's secrets.
+ *
+ * Config is repository policy. Policy comes from the base branch.
+ */
+const CONFIG_PATH_ENV = "AGENT_WORKFLOWS_CONFIG";
+
 export function loadConfig(cwd = process.cwd()): Config {
+  const explicit = process.env[CONFIG_PATH_ENV];
+  if (explicit) {
+    if (!existsSync(explicit)) {
+      throw new ConfigError(
+        `${CONFIG_PATH_ENV} points at ${explicit}, which does not exist. The workflow copies this out of the base branch — if that step was skipped, the branch may predate ${CONFIG_FILENAME}.`,
+      );
+    }
+    return parseConfig(readFileSync(explicit, "utf8"), explicit);
+  }
+
   const path = findConfig(cwd);
   if (!path) {
     throw new ConfigError(

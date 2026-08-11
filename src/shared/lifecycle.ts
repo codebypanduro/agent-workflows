@@ -27,8 +27,14 @@ export type Workflow = "implement" | "implement-pr" | "review" | "merge-main";
 
 /** How a run ended. Not every kind is reachable from every workflow. */
 export type RunOutcome =
-  /** The run died before reporting an outcome — crash, timeout, cancelled job. */
-  | { kind: "crashed" }
+  /**
+   * The run died before reporting an outcome — crash, timeout, cancelled job.
+   *
+   * `reason` is whatever the run managed to write to `failure_reason.txt`
+   * before dying. Usually there is one, and it is the difference between "it
+   * crashed" and "your config is not on the base branch".
+   */
+  | { kind: "crashed"; reason?: string }
   /** The agent ran to completion but committed nothing. */
   | { kind: "no-commits" }
   /** Verification failed on the branch, after every retry was spent. */
@@ -121,7 +127,9 @@ function shared(
     case "crashed":
       return blocked(
         "crashed",
-        `The agent run did not finish — it crashed, timed out, or was cancelled. Re-apply \`${retryLabel}\` to try again — [run log](${context.runUrl}).`,
+        outcome.reason
+          ? `The agent run did not finish:\n\n> ${outcome.reason.split("\n").join("\n> ")}\n\nRe-apply \`${retryLabel}\` once that is dealt with — [run log](${context.runUrl}).`
+          : `The agent run did not finish — it crashed, timed out, or was cancelled. Re-apply \`${retryLabel}\` to try again — [run log](${context.runUrl}).`,
       );
 
     case "checks-failed":
@@ -319,6 +327,7 @@ export function parseWorkflow(value: string): Workflow {
 export function parseOutcome(kind: string, detail?: string): RunOutcome {
   switch (kind) {
     case "crashed":
+      return { kind, reason: detail || undefined };
     case "no-commits":
     case "push-failed":
     case "branch-advanced":

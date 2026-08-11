@@ -233,3 +233,28 @@ describe("parseOutcome", () => {
     expect(() => parseWorkflow("nonsense")).toThrow(/Unknown workflow/);
   });
 });
+
+describe("a crash that managed to say why", () => {
+  it("quotes the reason instead of shrugging", () => {
+    const transition = decideTransition(
+      "merge-main",
+      { kind: "crashed", reason: "No agent-workflows.config.json found on main." },
+      context,
+    );
+
+    expect(transition.addLabel).toBe(HUMAN_BLOCKED);
+    expect(transition.comment?.body).toContain("No agent-workflows.config.json found on main.");
+    expect(transition.comment?.body).not.toContain("it crashed, timed out");
+  });
+
+  it("falls back when the run died too early to say anything", () => {
+    const transition = decideTransition("merge-main", { kind: "crashed" }, context);
+
+    expect(transition.comment?.body).toContain("it crashed, timed out, or was cancelled");
+  });
+
+  it("round-trips the reason through the environment", () => {
+    expect(parseOutcome("crashed", "boom")).toEqual({ kind: "crashed", reason: "boom" });
+    expect(parseOutcome("crashed", "")).toEqual({ kind: "crashed", reason: undefined });
+  });
+});

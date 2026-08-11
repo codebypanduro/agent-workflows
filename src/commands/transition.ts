@@ -3,13 +3,33 @@
 // Reads no config on purpose: it is pure outcome-to-label logic, and it must
 // still work on the path where loading the config is what failed.
 
-import { emit } from "../shared/common.ts";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { emit, outputDir } from "../shared/common.ts";
 import { decideTransition, parseOutcome, parseWorkflow } from "../shared/lifecycle.ts";
 
+/**
+ * What the run said on its way out.
+ *
+ * A crash is the one outcome a run cannot report through GITHUB_OUTPUT, so the
+ * reason goes to a file instead. Reading it here turns "it crashed" into
+ * something a human can act on without opening the log.
+ */
+function crashReason(): string | undefined {
+  const path = join(outputDir(), "failure_reason.txt");
+  if (!existsSync(path)) return undefined;
+  const text = readFileSync(path, "utf8").trim();
+  // Only the first paragraph: a stack trace belongs in the log, not the issue.
+  return text === "" ? undefined : text.split("\n\n")[0];
+}
+
 export function transition(): void {
+  const outcome = process.env.OUTCOME || "crashed";
+  const detail = outcome === "crashed" ? (process.env.DETAIL || crashReason()) : process.env.DETAIL;
+
   const result = decideTransition(
     parseWorkflow(process.env.WORKFLOW ?? ""),
-    parseOutcome(process.env.OUTCOME ?? "crashed", process.env.DETAIL),
+    parseOutcome(outcome, detail),
     {
       runUrl: process.env.RUN_URL ?? "",
       branch: process.env.BRANCH ?? "",
