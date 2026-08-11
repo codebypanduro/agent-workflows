@@ -42,7 +42,6 @@ jobs:
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
       BASE_REF: ${{ github.event.pull_request.base.ref }}
-      AGENT_WORKFLOWS_CONFIG: ${{ runner.temp }}/agent-workflows.config.json
       PR_STATE: ${{ github.event.pull_request.state }}
       BRANCH: ${{ github.event.pull_request.head.ref }}
       CLI: npx -y ${{ inputs.package-spec != '' && inputs.package-spec || format('@codebypanduro/agent-workflows@{0}', inputs.package-version) }}
@@ -70,6 +69,9 @@ jobs:
             echo "::error::agent-workflows.config.json is not on $BASE_REF. Run 'npx @codebypanduro/agent-workflows init' and merge it before labelling pull requests."
             exit 1
           fi
+          # Exported here rather than in the job's env: block, because the
+          # `runner` context does not exist at job level — only in steps.
+          echo "AGENT_WORKFLOWS_CONFIG=$RUNNER_TEMP/agent-workflows.config.json" >> "$GITHUB_ENV"
 
       # Before the claim, because the common refusal — the label applied to a
       # pull request with nothing outstanding — is the one worth catching cheaply.
