@@ -1,0 +1,41 @@
+{
+  "name": "@codebypanduro/agent-workflows",
+  "version": "0.1.0",
+  "description": "Label-driven coding-agent workflows for GitHub Actions: implement, review, address feedback, merge main.",
+  "keywords": ["github-actions", "claude", "coding-agent", "sandcastle", "automation"],
+  "license": "MIT",
+  "author": "Casper Panduro <cp@codebypanduro.dk>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/codebypanduro/agent-workflows.git"
+  },
+  "type": "module",
+  "bin": {
+    "agent-workflows": "./dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "prompts", "templates"],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@ai-hero/sandcastle": "^0.12.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "5.9.2",
+    "vitest": "^4.1.10"
+  }
+}

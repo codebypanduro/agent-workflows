@@ -1,0 +1,261 @@
+name: Implement
+
+# Reusable. Callers trigger on `issues: labeled` and point here; see
+# `templates/` or run `npx @codebypanduro/agent-workflows init`.
+#
+# One label, one run. The workflow — not the agent — owns every lifecycle label
+# transition, so an agent that crashes cannot leave the board lying.
+#
+# Ends by applying `agent:review` with the PAT, one of exactly two label writes
+# in this system that trigger another workflow.
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        type: string
+        default: "22"
+      timeout-minutes:
+        type: number
+        default: 60
+      package-version:
+        description: Version of @codebypanduro/agent-workflows to run
+        type: string
+        default: latest
+      issue_number:
+        description: >-
+          Issue to work. Only for a manual run — the caller passes its own
+          workflow_dispatch input through, because a reusable workflow cannot
+          see the caller's inputs otherwise.
+        type: string
+        default: ""
+
+jobs:
+  implement:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+
+    permissions:
+      issues: write
+      contents: read
+
+    env:
+      # Labels and comments go through GITHUB_TOKEN on purpose: label events it
+      # raises do not trigger workflows, so the pipeline cannot loop back on
+      # itself. The one chaining write below uses the PAT.
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REPO: ${{ github.repository }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      BASE_BRANCH: ${{ github.event.repository.default_branch }}
+      CLI: npx -y @codebypanduro/agent-workflows@${{ inputs.package-version }}
+
+    steps:
+      - name: Resolve the issue
+        id: issue
+        env:
+          NUMBER: ${{ inputs.issue_number != '' && inputs.issue_number || github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          TITLE=$(gh issue view "$NUMBER" -R "$REPO" --json title --jq .title)
+          {
+            echo "number=$NUMBER"
+            echo "title<<AGENT_EOF"
+            echo "$TITLE"
+            echo "AGENT_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      # Both credentials fail in confusing ways when misconfigured: an expired
+      # Claude token dies mid-agent, and a PAT without repo access surfaces as a
+      # git 403 buried under three retries. Name them here instead.
+      - name: Check the credentials
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          AGENT_GH_TOKEN: ${{ secrets.AGENT_GH_TOKEN }}
+        run: |
+          if [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
+            echo "::error::CLAUDE_CODE_OAUTH_TOKEN is not set. Generate it with 'claude setup-token' and add it as a repository secret."
+            exit 1
+          fi
+          if [ -z "$AGENT_GH_TOKEN" ]; then
+            echo "::error::AGENT_GH_TOKEN is not set. It needs Contents, Issues, Pull requests and Workflows write on this repository."
+            exit 1
+          fi
+
+          # Exactly the auth path actions/checkout uses, so a pass here means
+          # the clone and the push will both work.
+          AUTH=$(printf 'x-access-token:%s' "$AGENT_GH_TOKEN" | base64 -w0)
+          echo "::add-mask::$AUTH"
+          if ! git -c "http.extraheader=AUTHORIZATION: basic $AUTH" \
+               ls-remote "https://github.com/$REPO" HEAD >/dev/null 2>&1; then
+            echo "::error::AGENT_GH_TOKEN cannot reach $REPO over https — this is what actions/checkout will fail on. For a fine-grained PAT on an org-owned repo, check that repository access lists this repo, that Contents/Issues/Pull requests are Read and write, and that the organisation has approved the token."
+            exit 1
+          fi
+
+          # GitHub rejects any push touching .github/workflows/** unless the
+          # token carries the 'workflow' scope — and it rejects it at the push,
+          # after a full agent run has been spent. Fail here instead.
+          SCOPES=$(curl -sS -o /dev/null -D - \
+            -H "Authorization: Bearer $AGENT_GH_TOKEN" https://api.github.com/user \
+            | tr -d '\r' | awk 'tolower($1) == "x-oauth-scopes:" { $1 = ""; print substr($0, 2) }')
+          if [ -z "$SCOPES" ]; then
+            echo "::notice::AGENT_GH_TOKEN reports no OAuth scopes, so it is a fine-grained PAT or App token and its workflow permission cannot be checked from here. If a push is later rejected for '.github/workflows', set Workflows to Read and write."
+          elif ! printf '%s' "$SCOPES" | tr ',' '\n' | sed 's/ //g' | grep -qx "workflow"; then
+            echo "::error::AGENT_GH_TOKEN is a classic PAT with scopes [$SCOPES] and is missing 'workflow'. Any run whose issue touches .github/workflows/** will be rejected at the push and lose all its work."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.AGENT_GH_TOKEN }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      # Before the claim, so a refusal leaves the issue exactly as it was minus
+      # the trigger label — nothing in progress, nothing failed.
+      - name: Preflight
+        id: preflight
+        env:
+          ISSUE_NUMBER: ${{ steps.issue.outputs.number }}
+        run: $CLI preflight-implement
+
+      - name: Refuse
+        if: steps.preflight.outputs.proceed != 'true'
+        env:
+          NUMBER: ${{ steps.issue.outputs.number }}
+          REASON: ${{ steps.preflight.outputs.reason }}
+        run: |
+          set -euo pipefail
+          gh issue edit "$NUMBER" -R "$REPO" --remove-label "agent:todo"
+          gh issue comment "$NUMBER" -R "$REPO" --body "Refused to run: $REASON"
+
+      # Claim before anything can fail. Every later failure is then a transition
+      # out of agent:in-progress, so exactly one lifecycle label is present at
+      # all times.
+      - name: Claim the issue
+        if: steps.preflight.outputs.proceed == 'true'
+        id: claim
+        env:
+          NUMBER: ${{ steps.issue.outputs.number }}
+        run: |
+          gh issue edit "$NUMBER" -R "$REPO" \
+            --remove-label "agent:todo" \
+            --remove-label "human:blocked" \
+            --remove-label "human:review" \
+            --add-label "agent:in-progress"
+
+      - name: Install Claude Code
+        if: steps.claim.outcome == 'success'
+        run: |
+          curl -fsSL https://claude.ai/install.sh | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Run the agent
+        if: steps.claim.outcome == 'success'
+        id: agent
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          ISSUE_NUMBER: ${{ steps.issue.outputs.number }}
+          ISSUE_TITLE: ${{ steps.issue.outputs.title }}
+        run: $CLI implement
+
+      # Its own step, so a rejected push is distinguishable from a failure to
+      # open the pull request. They need different labels: one has lost the
+      # work, the other still has it on the branch.
+      - name: Push the branch
+        id: push
+        if: steps.agent.outcome == 'success' && steps.agent.outputs.outcome != 'no-commits'
+        env:
+          BRANCH: ${{ steps.preflight.outputs.branch }}
+        run: git push origin "$BRANCH"
+
+      # A failing branch still ships a pull request — only the label differs.
+      # Draft when it is going to review, ready when it is going to a human,
+      # because a draft on human:blocked is one nobody looks at again.
+      - name: Open the pull request
+        id: pr
+        if: steps.push.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_GH_TOKEN }}
+          BRANCH: ${{ steps.preflight.outputs.branch }}
+          NUMBER: ${{ steps.issue.outputs.number }}
+          TITLE: ${{ steps.issue.outputs.title }}
+          OUTCOME: ${{ steps.agent.outputs.outcome }}
+          DETAIL: ${{ steps.agent.outputs.detail }}
+        run: |
+          set -euo pipefail
+          {
+            if [ "$OUTCOME" = "checks-failed" ]; then
+              printf '> [!WARNING]\n> `%s` failed on this branch after every retry. Opened anyway so the work is not lost.\n\n' "$DETAIL"
+            elif [ "$OUTCOME" = "test-guard-tripped" ]; then
+              printf '> [!CAUTION]\n> The agent made its tests pass by removing them, so the run was stopped. %s\n\n' "$DETAIL"
+            fi
+            git log --format='%B' "origin/$BASE_BRANCH..$BRANCH"
+            printf -- '---\nCloses #%s\nProduced by [this agent run](%s).\n' "$NUMBER" "$RUN_URL"
+          } > "$RUNNER_TEMP/pr-body.md"
+
+          DRAFT=()
+          if [ "$OUTCOME" = "checks-passed" ]; then DRAFT=(--draft); fi
+
+          URL=$(gh pr create -R "$REPO" --base "$BASE_BRANCH" --head "$BRANCH" \
+            --title "$BRANCH: $TITLE" --body-file "$RUNNER_TEMP/pr-body.md" "${DRAFT[@]}")
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+
+      # always(), so a crash anywhere above still moves the issue off
+      # agent:in-progress. `crashed` is the fallback because it is the one
+      # outcome a run cannot report about itself.
+      - name: Decide the terminal label
+        id: transition
+        if: always() && steps.claim.outcome == 'success'
+        env:
+          WORKFLOW: implement
+          # A rejected push overrides the agent's own outcome: checks may have
+          # passed, but nothing survived, so agent:review would point the
+          # reviewer at a branch that does not exist.
+          OUTCOME: ${{ steps.push.outcome == 'failure' && 'push-failed' || steps.agent.outputs.outcome || 'crashed' }}
+          DETAIL: ${{ steps.agent.outputs.detail }}
+          BRANCH: ${{ steps.preflight.outputs.branch }}
+          PR_URL: ${{ steps.pr.outputs.url }}
+        run: $CLI transition
+
+      # The issue's own label is written with GITHUB_TOKEN and is inert. The
+      # chaining label is written with the PAT, on the pull request, and is what
+      # starts the reviewer.
+      - name: Apply the terminal label
+        if: always() && steps.transition.outcome == 'success'
+        env:
+          NUMBER: ${{ steps.issue.outputs.number }}
+          REMOVE_LABEL: ${{ steps.transition.outputs.remove_label }}
+          ADD_LABEL: ${{ steps.transition.outputs.add_label }}
+          CHAIN_LABEL: ${{ steps.transition.outputs.chain_label }}
+          COMMENT: ${{ steps.transition.outputs.comment }}
+          AGENT_GH_TOKEN: ${{ secrets.AGENT_GH_TOKEN }}
+          PR_URL: ${{ steps.pr.outputs.url }}
+        run: |
+          set -euo pipefail
+          gh issue edit "$NUMBER" -R "$REPO" --remove-label "$REMOVE_LABEL"
+          if [ -n "$ADD_LABEL" ]; then
+            gh issue edit "$NUMBER" -R "$REPO" --add-label "$ADD_LABEL"
+          fi
+          if [ -n "$COMMENT" ]; then
+            gh issue comment "$NUMBER" -R "$REPO" --body "$COMMENT"
+          fi
+          if [ -n "$CHAIN_LABEL" ]; then
+            GH_TOKEN="$AGENT_GH_TOKEN" gh pr edit "$PR_URL" --add-label "$CHAIN_LABEL"
+            gh issue comment "$NUMBER" -R "$REPO" \
+              --body "Implemented in $PR_URL, which is now queued for review."
+          fi
+
+      # Last resort: the transition step itself could not run. Without this the
+      # issue would be stranded.
+      - name: Fall back to a bare failure label
+        if: always() && steps.claim.outcome == 'success' && steps.transition.outcome != 'success'
+        env:
+          NUMBER: ${{ steps.issue.outputs.number }}
+        run: |
+          gh issue edit "$NUMBER" -R "$REPO" \
+            --remove-label "agent:in-progress" --add-label "human:blocked"
+          gh issue comment "$NUMBER" -R "$REPO" \
+            --body "The agent run failed before it could report an outcome — [run log]($RUN_URL)."

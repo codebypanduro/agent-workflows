@@ -1,0 +1,178 @@
+name: Implement PR
+
+# Reusable. Addresses the review feedback on a pull request.
+#
+# This is the end of the chain. It never re-applies `agent:review`: that
+# asymmetry is the only thing bounding implement → review → implement. Do not
+# "fix" it without reading the ADR on the two-hop chain.
+#
+# pull_request_target rather than pull_request: the standard trigger depends on
+# a generated merge commit, which GitHub fails to produce when the pull request
+# is out of date or conflicting.
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        type: string
+        default: "22"
+      timeout-minutes:
+        type: number
+        default: 60
+      package-version:
+        type: string
+        default: latest
+
+jobs:
+  implement-pr:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+
+    permissions:
+      contents: write
+      pull-requests: write
+
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REPO: ${{ github.repository }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      PR_STATE: ${{ github.event.pull_request.state }}
+      BRANCH: ${{ github.event.pull_request.head.ref }}
+      CLI: npx -y @codebypanduro/agent-workflows@${{ inputs.package-version }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          token: ${{ secrets.AGENT_GH_TOKEN }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      # Before the claim, because the common refusal — the label applied to a
+      # pull request with nothing outstanding — is the one worth catching cheaply.
+      - name: Preflight
+        id: preflight
+        run: $CLI preflight-implement-pr
+
+      - name: Refuse
+        if: steps.preflight.outputs.proceed != 'true'
+        env:
+          REASON: ${{ steps.preflight.outputs.reason }}
+        run: |
+          set -euo pipefail
+          gh pr edit "$PR_NUMBER" -R "$REPO" --remove-label "agent:todo"
+          gh pr comment "$PR_NUMBER" -R "$REPO" --body "Refused to run: $REASON"
+
+      - name: Claim the pull request
+        if: steps.preflight.outputs.proceed == 'true'
+        id: claim
+        run: |
+          gh pr edit "$PR_NUMBER" -R "$REPO" \
+            --remove-label "agent:todo" \
+            --remove-label "human:blocked" \
+            --remove-label "human:review" \
+            --add-label "agent:in-progress"
+
+      - name: Prepare the branch
+        if: steps.claim.outcome == 'success'
+        run: |
+          set -euo pipefail
+          git fetch origin "$BRANCH"
+          git checkout "$BRANCH"
+
+      - name: Install Claude Code
+        if: steps.claim.outcome == 'success'
+        run: |
+          curl -fsSL https://claude.ai/install.sh | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Run the agent
+        if: steps.claim.outcome == 'success'
+        id: agent
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: $CLI implement-pr
+
+      # Plain push, no force and no lease: nothing here rewrites history, so a
+      # non-fast-forward means somebody else pushed while the run was working.
+      # Dropping this run's commits is the right answer — they are reproducible,
+      # the other person's may not be.
+      - name: Push the branch
+        id: push
+        if: steps.agent.outcome == 'success' && steps.agent.outputs.outcome != 'no-commits'
+        run: |
+          set +e
+          git push origin "$BRANCH" 2> "$RUNNER_TEMP/push_err.txt"
+          status=$?
+          set -e
+          cat "$RUNNER_TEMP/push_err.txt"
+          if [ $status -ne 0 ]; then
+            if grep -qiE "non-fast-forward|rejected|fetch first|stale info" "$RUNNER_TEMP/push_err.txt"; then
+              echo "advanced=true" >> "$GITHUB_OUTPUT"
+            fi
+            exit $status
+          fi
+
+      # Every selected thread gets a reply, because the reply is what stops the
+      # next run treating the same feedback as outstanding.
+      - name: Reply to the review threads
+        if: steps.push.outcome == 'success'
+        run: |
+          set -euo pipefail
+          REPLIES="$RUNNER_TEMP/thread_replies.json"
+          [ -f "$REPLIES" ] || exit 0
+          count=$(jq 'length' "$REPLIES")
+          for i in $(seq 0 $((count - 1))); do
+            thread_id=$(jq -r ".[$i].threadId" "$REPLIES")
+            body=$(jq -r ".[$i].body" "$REPLIES")
+            # The GraphQL node id has to be resolved to the REST comment id the
+            # replies endpoint takes; there is no REST route from one to the other.
+            rest_id=$(gh api graphql \
+              -f query='query($id: ID!) { node(id: $id) { ... on PullRequestReviewThread { comments(first: 1) { nodes { databaseId } } } } }' \
+              -F id="$thread_id" --jq '.data.node.comments.nodes[0].databaseId' 2>/dev/null || echo "")
+            if [ -z "$rest_id" ] || [ "$rest_id" = "null" ]; then
+              echo "Could not resolve a REST id for $thread_id; skipping." >&2
+              continue
+            fi
+            gh api --method POST "repos/$REPO/pulls/$PR_NUMBER/comments/$rest_id/replies" -f body="$body"
+          done
+
+      - name: Decide the terminal label
+        id: transition
+        if: always() && steps.claim.outcome == 'success'
+        env:
+          WORKFLOW: implement-pr
+          OUTCOME: ${{ steps.push.outputs.advanced == 'true' && 'branch-advanced' || (steps.push.outcome == 'failure' && 'push-failed' || steps.agent.outputs.outcome || 'crashed') }}
+          DETAIL: ${{ steps.agent.outputs.detail }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: $CLI transition
+
+      # No chain branch here: implement-pr never chains, so chain_label is
+      # always empty and every write below is inert by design.
+      - name: Apply the terminal label
+        if: always() && steps.transition.outcome == 'success'
+        env:
+          REMOVE_LABEL: ${{ steps.transition.outputs.remove_label }}
+          ADD_LABEL: ${{ steps.transition.outputs.add_label }}
+          COMMENT: ${{ steps.transition.outputs.comment }}
+        run: |
+          set -euo pipefail
+          gh pr edit "$PR_NUMBER" -R "$REPO" --remove-label "$REMOVE_LABEL"
+          if [ -n "$ADD_LABEL" ]; then
+            gh pr edit "$PR_NUMBER" -R "$REPO" --add-label "$ADD_LABEL"
+          fi
+          if [ -n "$COMMENT" ]; then
+            gh pr comment "$PR_NUMBER" -R "$REPO" --body "$COMMENT"
+          fi
+
+      - name: Fall back to a bare failure label
+        if: always() && steps.claim.outcome == 'success' && steps.transition.outcome != 'success'
+        run: |
+          gh pr edit "$PR_NUMBER" -R "$REPO" \
+            --remove-label "agent:in-progress" --add-label "human:blocked"
+          gh pr comment "$PR_NUMBER" -R "$REPO" \
+            --body "The agent run failed before it could report an outcome — [run log]($RUN_URL)."

@@ -1,0 +1,146 @@
+name: Merge Main
+
+# Reusable. Brings a pull request branch up to date with its base.
+#
+# Merge, never rebase: a rebase would detach every inline review comment from
+# its line, and those comments are the review workflow's entire output. A clean
+# merge never starts an agent; conflicts are resolved by one, verified, and
+# always reported in a comment naming every file it touched.
+#
+# pull_request_target specifically matters here: the standard pull_request
+# trigger depends on a generated merge commit, which GitHub fails to produce
+# when the pull request is out of date — exactly when this needs to run.
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        type: string
+        default: "22"
+      timeout-minutes:
+        type: number
+        default: 45
+      package-version:
+        type: string
+        default: latest
+
+jobs:
+  merge-main:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+
+    permissions:
+      contents: write
+      pull-requests: write
+
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REPO: ${{ github.repository }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      BRANCH: ${{ github.event.pull_request.head.ref }}
+      CLI: npx -y @codebypanduro/agent-workflows@${{ inputs.package-version }}
+
+    steps:
+      - name: Claim the pull request
+        id: claim
+        run: |
+          gh pr edit "$PR_NUMBER" -R "$REPO" \
+            --remove-label "agent:merge-main" \
+            --remove-label "human:blocked" \
+            --remove-label "human:review" \
+            --add-label "agent:in-progress"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          token: ${{ secrets.AGENT_GH_TOKEN }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      - name: Install Claude Code
+        run: |
+          curl -fsSL https://claude.ai/install.sh | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Prepare the branch
+        run: |
+          set -euo pipefail
+          git fetch origin "$BRANCH"
+          git checkout "$BRANCH"
+
+      - name: Merge
+        id: agent
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: $CLI merge-main
+
+      # should_push.txt is written only when there is a merge commit worth
+      # pushing — an already-current branch produces nothing.
+      - name: Push the branch
+        id: push
+        if: steps.agent.outcome == 'success'
+        run: |
+          set -euo pipefail
+          if [ "$(cat "$RUNNER_TEMP/should_push.txt" 2>/dev/null || echo false)" != "true" ]; then
+            echo "Nothing to push."
+            exit 0
+          fi
+          set +e
+          git push origin "$BRANCH" 2> "$RUNNER_TEMP/push_err.txt"
+          status=$?
+          set -e
+          cat "$RUNNER_TEMP/push_err.txt"
+          if [ $status -ne 0 ]; then
+            if grep -qiE "non-fast-forward|rejected|fetch first|stale info" "$RUNNER_TEMP/push_err.txt"; then
+              echo "advanced=true" >> "$GITHUB_OUTPUT"
+            fi
+            exit $status
+          fi
+
+      # Mandatory whenever an agent resolved anything. A wrongly resolved
+      # conflict can delete working code and still pass every check, so this
+      # comment is the only artifact standing between that and a deploy.
+      - name: Post the resolution comment
+        if: steps.push.outcome == 'success'
+        run: |
+          set -euo pipefail
+          [ -f "$RUNNER_TEMP/merge_comment.md" ] || exit 0
+          gh pr comment "$PR_NUMBER" -R "$REPO" --body-file "$RUNNER_TEMP/merge_comment.md"
+
+      - name: Decide the terminal label
+        id: transition
+        if: always() && steps.claim.outcome == 'success'
+        env:
+          WORKFLOW: merge-main
+          OUTCOME: ${{ steps.push.outputs.advanced == 'true' && 'branch-advanced' || (steps.push.outcome == 'failure' && 'push-failed' || steps.agent.outputs.outcome || 'crashed') }}
+          DETAIL: ${{ steps.agent.outputs.detail }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: $CLI transition
+
+      - name: Apply the terminal label
+        if: always() && steps.transition.outcome == 'success'
+        env:
+          REMOVE_LABEL: ${{ steps.transition.outputs.remove_label }}
+          ADD_LABEL: ${{ steps.transition.outputs.add_label }}
+          COMMENT: ${{ steps.transition.outputs.comment }}
+        run: |
+          set -euo pipefail
+          gh pr edit "$PR_NUMBER" -R "$REPO" --remove-label "$REMOVE_LABEL"
+          if [ -n "$ADD_LABEL" ]; then
+            gh pr edit "$PR_NUMBER" -R "$REPO" --add-label "$ADD_LABEL"
+          fi
+          if [ -n "$COMMENT" ]; then
+            gh pr comment "$PR_NUMBER" -R "$REPO" --body "$COMMENT"
+          fi
+
+      - name: Fall back to a bare failure label
+        if: always() && steps.claim.outcome == 'success' && steps.transition.outcome != 'success'
+        run: |
+          gh pr edit "$PR_NUMBER" -R "$REPO" \
+            --remove-label "agent:in-progress" --add-label "human:blocked"
+          gh pr comment "$PR_NUMBER" -R "$REPO" \
+            --body "The merge run failed before it could report an outcome — [run log]($RUN_URL)."
