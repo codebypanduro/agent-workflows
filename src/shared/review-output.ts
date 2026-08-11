@@ -16,7 +16,7 @@ export const reviewOutputSchema = z.object({
    * Whether anything found here should be fixed before a human reads it.
    *
    * This is the flag that decides whether the chain continues to
-   * implement-pr (docs/adr/0007), so it is deliberately the reviewer's own
+   * implement-pr (docs/adr/0004), so it is deliberately the reviewer's own
    * judgement rather than something inferred from the comment count — a
    * review can raise three nits and still be fine to merge.
    */

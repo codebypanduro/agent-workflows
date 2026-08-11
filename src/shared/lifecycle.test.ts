@@ -76,7 +76,7 @@ describe("the invariants that keep the board honest", () => {
 
   // This is the loop bound. Two chaining edges, statically: implement hands to
   // review, review hands to implement-pr, implement-pr hands to a human
-  // (docs/adr/0007). A third edge anywhere here closes the cycle.
+  // (docs/adr/0004). A third edge anywhere here closes the cycle.
   it("has exactly two chaining transitions in the whole table", () => {
     const chaining = WORKFLOWS.flatMap((workflow) =>
       REACHABLE[workflow]

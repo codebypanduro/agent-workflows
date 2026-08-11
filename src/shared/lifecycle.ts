@@ -33,7 +33,7 @@ export type RunOutcome =
   | { kind: "no-commits" }
   /** Verification failed on the branch, after every retry was spent. */
   | { kind: "checks-failed"; failedCommand: string }
-  /** A retry lap went green by removing or skipping tests (docs/adr/0008). */
+  /** A retry lap went green by removing or skipping tests (docs/adr/0005). */
   | { kind: "test-guard-tripped"; detail: string }
   /** The agent committed, but the branch never reached GitHub. */
   | { kind: "push-failed" }
@@ -67,7 +67,7 @@ export interface TransitionContext {
  * `GITHUB_TOKEN`'s label events do not trigger workflows, which is what stops
  * the pipeline looping back on itself, so a chaining write must use
  * `AGENT_GH_TOKEN` instead. Exactly two transitions in this table carry one —
- * the two edges of the chain in docs/adr/0003 — and everything else is inert by
+ * the two edges of the chain in docs/adr/0002 — and everything else is inert by
  * construction.
  *
  * `target` matters because the chain crosses objects: implement runs on an
@@ -132,7 +132,7 @@ function shared(
 
     // Deliberately loud. A retry lap that went green by deleting tests is the
     // one failure mode where the verification chain reports success and is
-    // wrong (docs/adr/0008), so it must never read like an ordinary red run.
+    // wrong (docs/adr/0005), so it must never read like an ordinary red run.
     case "test-guard-tripped":
       return blocked(
         "test-guard-tripped",
@@ -205,7 +205,7 @@ export function decideTransition(
 
       switch (outcome.kind) {
         // Terminates at a human on purpose. Re-requesting review here would
-        // close the cycle implement → review → implement (docs/adr/0007); the
+        // close the cycle implement → review → implement (docs/adr/0004); the
         // asymmetry is the only thing bounding the chain.
         case "checks-passed":
           return {
@@ -232,7 +232,7 @@ export function decideTransition(
 
       switch (outcome.kind) {
         // The second and last transition that triggers a workflow. One hop
-        // only: implement-pr terminates at a human (docs/adr/0007).
+        // only: implement-pr terminates at a human (docs/adr/0004).
         // addLabel is null: the pull request is going straight back to an
         // agent, so any terminal label here would be wrong the moment it
         // landed.

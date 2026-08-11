@@ -1,4 +1,4 @@
-// Verification and the self-repair loop (docs/adr/0008).
+// Verification and the self-repair loop (docs/adr/0005).
 //
 // `VERIFY_COMMANDS` is the single source of truth for "is this branch good".
 // The same pair runs in the sandbox as the agent's own feedback signal and on
