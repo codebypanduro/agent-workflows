@@ -165,11 +165,11 @@ export function fetchPullRequest(repo: string, number: string, commitPrefix = "a
 /**
  * Whether the agent has already answered a thread.
  *
- * This is the dedup marker (docs/adr/0007). The alternative — resolving the
- * thread — would have an agent closing out a human's feedback, so the reply
- * itself carries the state instead. It also means a human replying *after* the
- * agent puts the thread straight back in scope, which is the behaviour you
- * want when the fix was wrong.
+ * This is the dedup marker. The alternative — resolving the thread — would have
+ * an agent closing out a human's feedback, so the reply itself carries the
+ * state instead. It also means a human replying *after* the agent puts the
+ * thread straight back in scope, which is the behaviour you want when the fix
+ * was wrong.
  */
 export function isAnsweredByAgent(thread: ReviewThread, agentLogin: string): boolean {
   return thread.comments.at(-1)?.author === agentLogin;

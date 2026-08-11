@@ -1,4 +1,4 @@
-// The test-deletion guard (docs/adr/0008).
+// The test-deletion guard (docs/adr/0005).
 //
 // The self-repair loop hands a failing agent the same instruction three times:
 // make the red go away. An agent that cannot fix the bug still has one move

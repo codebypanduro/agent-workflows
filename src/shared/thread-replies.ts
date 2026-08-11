@@ -1,10 +1,10 @@
 // Deciding what the agent replies to each review thread.
 //
-// A reply is not courtesy — it is the dedup marker (docs/adr/0007). A thread
-// the agent silently skipped stays unanswered, so the next run picks it up as
-// outstanding work and fixes it again. Every selected thread therefore gets a
-// reply, with the agent's own words when it wrote some and a templated
-// acknowledgement when it did not.
+// A reply is not courtesy — it is the dedup marker. A thread the agent silently
+// skipped stays unanswered, so the next run picks it up as outstanding work and
+// fixes it again. Every selected thread therefore gets a reply, with the
+// agent's own words when it wrote some and a templated acknowledgement when it
+// did not.
 //
 // Pure, so the fallback behaviour is testable without a pull request.
 
