@@ -46,6 +46,11 @@ jobs:
     permissions:
       issues: write
       contents: read
+      # preflight-implement runs `gh pr list` under GITHUB_TOKEN to avoid opening a
+      # second pull request for an issue that already has one. On a public repository
+      # that read succeeds without a grant, which is why this was missing for so long;
+      # on a private one it fails with "Resource not accessible by integration".
+      pull-requests: read
 
     env:
       # Labels and comments go through GITHUB_TOKEN on purpose: label events it

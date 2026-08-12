@@ -24,6 +24,7 @@ jobs:
     permissions:
       issues: write
       contents: read
+      pull-requests: read
     uses: ./.github/workflows/implement.yml
     # A reusable workflow cannot see the caller's inputs, so a manual run
     # has to hand the issue number over explicitly.

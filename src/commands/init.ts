@@ -71,7 +71,10 @@ export const CALLERS: readonly CallerSpec[] = [
     label: TODO,
     workflow: "implement.yml",
     comment: "Implements an issue from scratch and opens a draft pull request.",
-    permissions: { issues: "write", contents: "read" },
+    // pull-requests: read is for preflight's `gh pr list` under GITHUB_TOKEN. It is
+    // only observable on a private repository — a public one allows that read
+    // without any grant at all.
+    permissions: { issues: "write", contents: "read", "pull-requests": "read" },
   },
   {
     file: "agent-implement-pr.yml",

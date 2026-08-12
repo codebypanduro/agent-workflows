@@ -166,4 +166,24 @@ describe("the shape every reusable workflow has to have", () => {
   it("keeps the reviewer unable to write to the repository", () => {
     expect(read("review.yml")).not.toMatch(/^ {6}contents: write$/m);
   });
+
+  // Every reusable workflow shells out to a CLI command that inspects pull
+  // requests — implement's is the least obvious, since preflight lists them only
+  // to avoid opening a duplicate. A public repository lets GITHUB_TOKEN make that
+  // read with no grant at all, so a missing permission here is invisible until
+  // the first private consumer installs it and dies on "Resource not accessible
+  // by integration". implement.yml shipped without it for exactly that reason.
+  it("grants pull-requests on every reusable workflow and its caller", () => {
+    for (const name of REUSABLE) {
+      expect(read(name), `${name} never grants pull-requests`).toMatch(
+        /^ {6}pull-requests: (read|write)$/m,
+      );
+    }
+
+    for (const name of DOGFOOD) {
+      expect(read(name), `${name} does not pass pull-requests through`).toMatch(
+        /^ {6}pull-requests: (read|write)$/m,
+      );
+    }
+  });
 });
